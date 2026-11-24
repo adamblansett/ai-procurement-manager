@@ -27,13 +27,30 @@ class Settings(BaseSettings):
 
     llm_default_provider: Literal["mock", "ollama", "gemini"] = "mock"
     llm_fallback_providers: str = "ollama,gemini,mock"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_default_model: str = "llama-3.1-8b-instruct"
+    gemini_api_key: str = ""
+    gemini_default_model: str = "gemini-2.5-flash"
+    llm_timeout_seconds: float = 20.0
     llm_redact_pii_for_cloud: bool = True
 
+    auto_seed_demo_data: bool = True
+    po_auto_approve_threshold: float = 10000.0
+    po_director_approval_threshold: float = 50000.0
+    po_vp_approval_threshold: float = 150000.0
+
     auth_secret_key: str = _DEFAULT_DEV_SECRET
+    rate_limit_enabled: bool = True
 
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def fallback_provider_list(self) -> list[str]:
+        return [
+            item.strip().lower() for item in self.llm_fallback_providers.split(",") if item.strip()
+        ]
 
 
 @lru_cache(maxsize=1)

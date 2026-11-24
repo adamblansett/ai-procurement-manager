@@ -1,33 +1,70 @@
-import { useEffect, useState } from 'react';
-import { Activity, Cpu, ShieldCheck } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  Activity,
+  BarChart3,
+  CalendarClock,
+  FileText,
+  LayoutDashboard,
+  Receipt,
+  ShieldCheck,
+} from 'lucide-react';
+import { procurementApi } from './api/client';
+import { BenchmarksView } from './components/BenchmarksView';
+import { ContractsView } from './components/ContractsView';
+import { GovernanceView } from './components/GovernanceView';
+import { OverviewDashboard, type WorkspaceTab } from './components/OverviewDashboard';
+import { PurchasingView } from './components/PurchasingView';
+import { RenewalsView } from './components/RenewalsView';
+import type { ApprovalRequest, DashboardSummary, HealthStatus, Vendor } from './types/procurement';
 
-interface HealthStatus {
-  status: string;
-  service: string;
-  app_name: string;
-  version: string;
-  environment: string;
-  llm_provider: string;
-}
-
-const PLANNED_CAPABILITIES = [
-  { title: 'Contract Comparison', summary: 'Side-by-side MSA/DPA term diffing against preferred commercial playbooks.' },
-  { title: 'Pricing Benchmarks', summary: 'Unit-rate, tier, and uplift clause comparison across historical vendor quotes.' },
-  { title: 'PO Validation', summary: 'Quote-to-PO line-item, budget-code, and approval-threshold verification.' },
-  { title: 'Renewal Tracking', summary: 'Auto-renewal notice window alerts and negotiation brief preparation.' },
+const NAV_ITEMS: Array<{
+  id: WorkspaceTab;
+  label: string;
+  icon: typeof LayoutDashboard;
+}> = [
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'contracts', label: 'Contracts', icon: FileText },
+  { id: 'benchmarks', label: 'Pricing Benchmarks', icon: BarChart3 },
+  { id: 'purchasing', label: 'PO Validation', icon: Receipt },
+  { id: 'renewals', label: 'Renewals', icon: CalendarClock },
+  { id: 'governance', label: 'Approvals & Audit', icon: ShieldCheck },
 ];
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('overview');
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [offline, setOffline] = useState(false);
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refreshWorkspace = useCallback(async () => {
+    try {
+      const [summaryRes, vendorRes, approvalRes] = await Promise.all([
+        procurementApi.getDashboardSummary(),
+        procurementApi.listVendors(),
+        procurementApi.listApprovals('pending'),
+      ]);
+      setSummary(summaryRes);
+      setVendors(vendorRes);
+      setApprovals(approvalRes);
+    } catch {
+      // Keep graceful offline fallback if domain endpoints are unreachable.
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
-    async function checkHealth() {
+    async function bootstrap() {
+      setLoading(true);
       try {
         const response = await fetch('/api/v1/health');
         if (!response.ok) {
-          if (!cancelled) setOffline(true);
+          if (!cancelled) {
+            setOffline(true);
+            setLoading(false);
+          }
           return;
         }
         const payload = (await response.json()) as HealthStatus;
@@ -35,83 +72,124 @@ export default function App() {
           setHealth(payload);
           setOffline(false);
         }
+        await refreshWorkspace();
       } catch {
-        if (!cancelled) setOffline(true);
+        if (!cancelled) {
+          setOffline(true);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     }
-    void checkHealth();
+    void bootstrap();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshWorkspace]);
+
+  async function handleSeedDemo() {
+    await procurementApi.triggerSeed();
+    await refreshWorkspace();
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-4 px-6 py-5">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-indigo-600">
-              Phase 2 — Administrative, Quality & Specialized Additions
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-600">
+              Autonomous Procurement &amp; Vendor Intelligence
             </p>
-            <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">AI Procurement & Vendor Manager</h1>
-            <p className="mt-1 text-sm text-slate-600">Open-source, self-hosted AI procurement and vendor management platform for supplier contract comparison, pricing benchmarks, PO validation, and renewal tracking.</p>
+            <h1 className="mt-0.5 text-xl font-bold tracking-tight text-slate-900">
+              AI Procurement &amp; Vendor Manager
+            </h1>
           </div>
-          <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3.5 py-1.5 text-xs font-medium">
-            <Activity
-              className={`h-3.5 w-3.5 ${
-                health?.status === 'ok'
-                  ? 'text-emerald-600'
+
+          <div className="flex flex-wrap items-center gap-2.5 text-xs font-medium">
+            {health?.pii_redaction_enabled !== false && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-700">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                Cloud PII Redaction On
+              </span>
+            )}
+            <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3.5 py-1">
+              <Activity
+                className={`h-3.5 w-3.5 ${
+                  health?.status === 'ok'
+                    ? 'text-emerald-600'
+                    : offline
+                    ? 'text-amber-600'
+                    : 'text-slate-400'
+                }`}
+              />
+              <span>
+                {health?.status === 'ok'
+                  ? `API Healthy (${health.llm_provider})`
                   : offline
-                  ? 'text-amber-600'
-                  : 'text-slate-400'
-              }`}
-            />
-            <span>
-              {health?.status === 'ok'
-                ? `API Healthy (${health.llm_provider})`
-                : offline
-                ? 'Offline Starter Preview'
-                : 'Checking API...'}
-            </span>
+                  ? 'Offline Starter Preview'
+                  : 'Checking API...'}
+              </span>
+            </div>
           </div>
         </div>
+
+        <nav
+          aria-label="Primary workspaces"
+          className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-6"
+        >
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active = activeTab === item.id;
+            const showBadge = item.id === 'governance' && approvals.length > 0;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className={`inline-flex shrink-0 items-center gap-2 border-b-2 px-3.5 py-2.5 text-xs font-semibold transition ${
+                  active
+                    ? 'border-indigo-600 text-indigo-700'
+                    : 'border-transparent text-slate-600 hover:border-slate-300 hover:text-slate-900'
+                }`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                <span>{item.label}</span>
+                {showBadge && (
+                  <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+                    {approvals.length}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
       </header>
 
-      <main className="mx-auto max-w-5xl space-y-6 px-6 py-8">
-        <section className="grid gap-4 sm:grid-cols-2">
-          {PLANNED_CAPABILITIES.map((item) => (
-            <article
-              key={item.title}
-              className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
-            >
-              <h2 className="text-sm font-semibold text-slate-900">{item.title}</h2>
-              <p className="mt-1.5 text-xs leading-relaxed text-slate-600">{item.summary}</p>
-            </article>
-          ))}
-        </section>
-
-        <section className="grid gap-4 sm:grid-cols-2">
-          <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-5">
-            <Cpu className="mt-0.5 h-5 w-5 shrink-0 text-indigo-600" />
-            <div>
-              <h3 className="text-sm font-semibold text-slate-900">Local-First LLM Routing</h3>
-              <p className="mt-1 text-xs text-slate-600">
-                Supports offline deterministic mock execution, local Ollama inference, and guarded
-                cloud fallback.
-              </p>
-            </div>
-          </div>
-          <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-5">
-            <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
-            <div>
-              <h3 className="text-sm font-semibold text-slate-900">Production Security Baseline</h3>
-              <p className="mt-1 text-xs text-slate-600">
-                Ships with fail-fast production secret validation, ASGI security headers, and
-                human-in-the-loop review boundaries.
-              </p>
-            </div>
-          </div>
-        </section>
+      <main className="mx-auto max-w-7xl px-6 py-6">
+        {activeTab === 'overview' && (
+          <OverviewDashboard
+            summary={summary}
+            approvals={approvals}
+            loading={loading}
+            onNavigate={setActiveTab}
+            onSeedDemo={handleSeedDemo}
+          />
+        )}
+        {activeTab === 'contracts' && (
+          <ContractsView vendors={vendors} onDataChange={refreshWorkspace} />
+        )}
+        {activeTab === 'benchmarks' && (
+          <BenchmarksView vendors={vendors} onDataChange={refreshWorkspace} />
+        )}
+        {activeTab === 'purchasing' && (
+          <PurchasingView vendors={vendors} onDataChange={refreshWorkspace} />
+        )}
+        {activeTab === 'renewals' && (
+          <RenewalsView vendors={vendors} onDataChange={refreshWorkspace} />
+        )}
+        {activeTab === 'governance' && <GovernanceView onDataChange={refreshWorkspace} />}
       </main>
     </div>
   );

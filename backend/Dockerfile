@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml ./
 COPY app ./app
-RUN pip install --no-cache-dir . \
+RUN pip install --no-cache-dir ".[postgres]" \
     && mkdir -p /data/storage \
     && chown -R appuser:appgroup /app /data/storage
 
