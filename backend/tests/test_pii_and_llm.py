@@ -115,9 +115,7 @@ async def test_gemini_adapter_redacts_pii_before_outbound_call(
 ) -> None:
     captured: dict[str, Any] = {}
 
-    async def fake_post(
-        self: httpx.AsyncClient, url: str, **kwargs: Any
-    ) -> httpx.Response:
+    async def fake_post(self: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
         captured["url"] = url
         captured["json"] = kwargs.get("json")
         return httpx.Response(
@@ -141,8 +139,7 @@ async def test_gemini_adapter_redacts_pii_before_outbound_call(
             task="contract_compare",
             system_prompt="Contact legal@acme.com if escalated.",
             user_prompt=(
-                "Signer SSN 123-45-6789, Account #: ACCT-55443322, "
-                "email vendor-rep@supplier.io."
+                "Signer SSN 123-45-6789, Account #: ACCT-55443322, email vendor-rep@supplier.io."
             ),
         )
     )
@@ -166,9 +163,7 @@ async def test_gemini_adapter_redacts_pii_before_outbound_call(
 async def test_llm_router_falls_back_to_mock_when_upstream_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def failing_post(
-        self: httpx.AsyncClient, url: str, **kwargs: Any
-    ) -> httpx.Response:
+    async def failing_post(self: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
         raise httpx.ConnectError("Ollama unreachable")
 
     monkeypatch.setattr(httpx.AsyncClient, "post", failing_post)

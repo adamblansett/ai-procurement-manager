@@ -2,20 +2,31 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
   BarChart3,
+  Building2,
   CalendarClock,
   FileText,
+  KeyRound,
   LayoutDashboard,
   Receipt,
   ShieldCheck,
 } from 'lucide-react';
-import { procurementApi } from './api/client';
+import { getAuthToken, procurementApi, setAuthToken } from './api/client';
+import { AuthModal } from './components/AuthModal';
 import { BenchmarksView } from './components/BenchmarksView';
 import { ContractsView } from './components/ContractsView';
 import { GovernanceView } from './components/GovernanceView';
 import { OverviewDashboard, type WorkspaceTab } from './components/OverviewDashboard';
 import { PurchasingView } from './components/PurchasingView';
 import { RenewalsView } from './components/RenewalsView';
-import type { ApprovalRequest, DashboardSummary, HealthStatus, Vendor } from './types/procurement';
+import { VendorsView } from './components/VendorsView';
+import type {
+  ApprovalRequest,
+  AuthUser,
+  DashboardSummary,
+  HealthStatus,
+  Vendor,
+} from './types/procurement';
+import { formatLabel } from './utils/format';
 
 const NAV_ITEMS: Array<{
   id: WorkspaceTab;
@@ -23,6 +34,7 @@ const NAV_ITEMS: Array<{
   icon: typeof LayoutDashboard;
 }> = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'vendors', label: 'Vendors', icon: Building2 },
   { id: 'contracts', label: 'Contracts', icon: FileText },
   { id: 'benchmarks', label: 'Pricing Benchmarks', icon: BarChart3 },
   { id: 'purchasing', label: 'PO Validation', icon: Receipt },
@@ -37,6 +49,8 @@ export default function App() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const refreshWorkspace = useCallback(async () => {
@@ -71,6 +85,14 @@ export default function App() {
         if (!cancelled) {
           setHealth(payload);
           setOffline(false);
+        }
+        if (getAuthToken()) {
+          try {
+            const me = await procurementApi.getMe();
+            if (!cancelled) setCurrentUser(me);
+          } catch {
+            setAuthToken(null);
+          }
         }
         await refreshWorkspace();
       } catch {
@@ -114,6 +136,18 @@ export default function App() {
                 Cloud PII Redaction On
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => setShowAuthModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-indigo-800 hover:bg-indigo-100"
+            >
+              <KeyRound className="h-3.5 w-3.5" />
+              <span>
+                {currentUser
+                  ? `${currentUser.full_name} (${formatLabel(currentUser.role)})`
+                  : 'Sign In (RBAC)'}
+              </span>
+            </button>
             <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3.5 py-1">
               <Activity
                 className={`h-3.5 w-3.5 ${
@@ -177,6 +211,9 @@ export default function App() {
             onSeedDemo={handleSeedDemo}
           />
         )}
+        {activeTab === 'vendors' && (
+          <VendorsView vendors={vendors} onDataChange={refreshWorkspace} />
+        )}
         {activeTab === 'contracts' && (
           <ContractsView vendors={vendors} onDataChange={refreshWorkspace} />
         )}
@@ -189,8 +226,21 @@ export default function App() {
         {activeTab === 'renewals' && (
           <RenewalsView vendors={vendors} onDataChange={refreshWorkspace} />
         )}
-        {activeTab === 'governance' && <GovernanceView onDataChange={refreshWorkspace} />}
+        {activeTab === 'governance' && (
+          <GovernanceView currentUser={currentUser} onDataChange={refreshWorkspace} />
+        )}
       </main>
+
+      {showAuthModal && (
+        <AuthModal
+          currentUser={currentUser}
+          onClose={() => setShowAuthModal(false)}
+          onAuthenticated={(user) => {
+            setCurrentUser(user);
+            void refreshWorkspace();
+          }}
+        />
+      )}
     </div>
   );
 }

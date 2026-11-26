@@ -1,7 +1,13 @@
 import { type FormEvent, useEffect, useState } from 'react';
-import { CalendarPlus, Copy, Send, Sparkles } from 'lucide-react';
+import { BellRing, CalendarPlus, Copy, Download, Send, Sparkles } from 'lucide-react';
 import { procurementApi } from '../api/client';
-import type { Contract, RenewalBriefResponse, RenewalItem, Vendor } from '../types/procurement';
+import type {
+  Contract,
+  RenewalAlertDispatch,
+  RenewalBriefResponse,
+  RenewalItem,
+  Vendor,
+} from '../types/procurement';
 import { formatCurrency, formatLabel, getBadgeTone } from '../utils/format';
 
 interface RenewalsViewProps {
@@ -12,6 +18,7 @@ interface RenewalsViewProps {
 export function RenewalsView({ vendors, onDataChange }: RenewalsViewProps) {
   const [renewals, setRenewals] = useState<RenewalItem[]>([]);
   const [contracts, setContracts] = useState<Contract[]>([]);
+  const [alerts, setAlerts] = useState<RenewalAlertDispatch[]>([]);
   const [selected, setSelected] = useState<RenewalItem | null>(null);
   const [brief, setBrief] = useState<RenewalBriefResponse | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -33,12 +40,14 @@ export function RenewalsView({ vendors, onDataChange }: RenewalsViewProps) {
 
   async function loadRenewals(selectId?: string) {
     try {
-      const [items, contractList] = await Promise.all([
+      const [items, contractList, alertRows] = await Promise.all([
         procurementApi.listRenewals(),
         procurementApi.listContracts(),
+        procurementApi.listRenewalAlerts(),
       ]);
       setRenewals(items);
       setContracts(contractList);
+      setAlerts(alertRows);
       const target = items.find((r) => r.id === (selectId || selected?.id)) || items[0] || null;
       setSelected(target);
       if (target && target.brief_data_json && Object.keys(target.brief_data_json).length > 0) {
@@ -169,6 +178,23 @@ export function RenewalsView({ vendors, onDataChange }: RenewalsViewProps) {
     }
   }
 
+  async function handleRunAlertSweep() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await procurementApi.runRenewalAlertSweep();
+      setStatusMessage(
+        `Alert sweep checked ${res.checked_count} renewals and dispatched ${res.dispatched_count} new alert(s).`
+      );
+      await loadRenewals(selected?.id);
+      await onDataChange();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Alert sweep failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function handleCopyDraft() {
     if (!brief?.draft_notice_email) return;
     if (navigator.clipboard?.writeText) {
@@ -196,14 +222,25 @@ export function RenewalsView({ vendors, onDataChange }: RenewalsViewProps) {
             outbound notices via HITL approval.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowAdd((prev) => !prev)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
-        >
-          <CalendarPlus className="h-3.5 w-3.5" />
-          Track New Renewal
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void handleRunAlertSweep()}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            <BellRing className="h-3.5 w-3.5 text-amber-600" />
+            Run Alert Sweep
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowAdd((prev) => !prev)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+          >
+            <CalendarPlus className="h-3.5 w-3.5" />
+            Track New Renewal
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -416,15 +453,25 @@ export function RenewalsView({ vendors, onDataChange }: RenewalsViewProps) {
                     ({selected.auto_renew ? 'Auto-Renew' : 'Opt-In'})
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void handleGenerateBrief()}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-                >
-                  <Sparkles className="h-3.5 w-3.5" />
-                  {busy ? 'Generating...' : 'Generate AI Renegotiation Brief'}
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <a
+                    href={procurementApi.exportRenewalBriefUrl(selected.id)}
+                    download
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Export (.md)
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => void handleGenerateBrief()}
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {busy ? 'Generating...' : 'Generate AI Renegotiation Brief'}
+                  </button>
+                </div>
               </div>
 
               {brief ? (
@@ -535,6 +582,27 @@ export function RenewalsView({ vendors, onDataChange }: RenewalsViewProps) {
           )}
         </div>
       </div>
+
+      {alerts.length > 0 && (
+        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+            Recent Threshold Alert Dispatches ({alerts.length})
+          </h3>
+          <div className="mt-2.5 space-y-2">
+            {alerts.slice(0, 5).map((a) => (
+              <div
+                key={a.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs"
+              >
+                <span className="text-slate-700">{a.message_summary}</span>
+                <span className="shrink-0 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600">
+                  &le;{a.threshold_days}d &middot; {a.channel} ({a.delivery_status})
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

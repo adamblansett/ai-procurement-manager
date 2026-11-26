@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -69,4 +69,22 @@ class ContractClauseFinding(Base):
     playbook_position: Mapped[str] = mapped_column(Text)
     redline_suggestion: Mapped[str] = mapped_column(Text, default="")
     deviation_score: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
+
+
+class ContractClauseEmbedding(Base):
+    """Semantic embedding vector per evaluated contract clause for precedent lookup."""
+
+    __tablename__ = "contract_clause_embeddings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    contract_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("contracts.id", ondelete="CASCADE"), index=True
+    )
+    vendor_id: Mapped[str] = mapped_column(String(36), ForeignKey("vendors.id"), index=True)
+    clause_type: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(24))
+    chunk_text: Mapped[str] = mapped_column(Text)
+    embedding_json: Mapped[list[float]] = mapped_column(JSON, default=list)
+    dimensions: Mapped[int] = mapped_column(Integer, default=384)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)

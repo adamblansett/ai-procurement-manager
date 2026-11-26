@@ -1,4 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import csv
+import io
+from typing import Any
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,6 +74,84 @@ async def create_budget(
     await db.commit()
     await db.refresh(account)
     return _to_budget_read(account)
+
+
+@router.post("/budgets/import-csv")
+async def import_budgets_csv(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Bulk-import or update cost-center budget accounts from an uploaded UTF-8 CSV."""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded CSV file is empty")
+    try:
+        text_data = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="CSV file must be UTF-8 encoded") from exc
+
+    reader = csv.DictReader(io.StringIO(text_data))
+    imported_count = 0
+    updated_count = 0
+    errors: list[str] = []
+
+    for row_num, row in enumerate(reader, start=2):
+        try:
+            code = (row.get("cost_center_code") or "").strip()
+            department = (row.get("department") or "").strip()
+            annual_budget = float((row.get("annual_budget") or "").strip())
+            committed_amount = float((row.get("committed_amount") or "0").strip())
+            fiscal_year = int((row.get("fiscal_year") or "2026").strip())
+            owner_name = (row.get("owner_name") or "Finance Owner").strip()
+            if not code or not department or annual_budget <= 0:
+                raise ValueError("Missing cost_center_code, department, or positive annual_budget")
+
+            existing = (
+                await db.execute(
+                    select(BudgetAccount).where(BudgetAccount.cost_center_code == code)
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                existing.department = department
+                existing.fiscal_year = fiscal_year
+                existing.annual_budget = round(annual_budget, 2)
+                existing.committed_amount = round(committed_amount, 2)
+                existing.owner_name = owner_name
+                updated_count += 1
+            else:
+                db.add(
+                    BudgetAccount(
+                        cost_center_code=code,
+                        department=department,
+                        fiscal_year=fiscal_year,
+                        annual_budget=round(annual_budget, 2),
+                        committed_amount=round(committed_amount, 2),
+                        owner_name=owner_name,
+                    )
+                )
+                imported_count += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Row {row_num}: {exc}")
+
+    if imported_count > 0 or updated_count > 0:
+        await db.flush()
+        await record_audit_event(
+            db,
+            actor="finance-admin",
+            action="budget.csv_imported",
+            entity_type="budget_account",
+            entity_id="bulk-csv",
+            summary=(
+                f"Imported {imported_count} and updated {updated_count} budget accounts from CSV."
+            ),
+        )
+        await db.commit()
+
+    return {
+        "imported_count": imported_count,
+        "updated_count": updated_count,
+        "errors": errors,
+    }
 
 
 @router.get("/quotes", response_model=list[VendorQuoteRead])

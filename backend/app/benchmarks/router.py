@@ -1,4 +1,8 @@
-from fastapi import APIRouter, Depends, status
+import csv
+import io
+from typing import Any
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -103,3 +107,73 @@ async def analyze_quote(
 ) -> QuoteAnalyzeResponse:
     """Evaluate a proposed quote price and uplift against historical benchmarks."""
     return await analyze_quote_pricing(db, payload)
+
+
+@router.post("/import-csv")
+async def import_benchmarks_csv(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Bulk-import normalized pricing benchmarks from an uploaded UTF-8 CSV file."""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded CSV file is empty")
+    try:
+        text_data = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="CSV file must be UTF-8 encoded") from exc
+
+    reader = csv.DictReader(io.StringIO(text_data))
+    imported_count = 0
+    skipped_count = 0
+    errors: list[str] = []
+
+    for row_num, row in enumerate(reader, start=2):
+        try:
+            sku_code = (row.get("sku_code") or "").strip()
+            sku_name = (row.get("sku_name") or "").strip()
+            category = (row.get("category") or "").strip()
+            unit_type = (row.get("unit_type") or "unit/year").strip()
+            price = float((row.get("quoted_unit_price") or "").strip())
+            if not sku_code or not sku_name or not category or price <= 0:
+                raise ValueError("Missing required SKU/category/price fields")
+            bm = PricingBenchmark(
+                sku_code=sku_code,
+                sku_name=sku_name,
+                category=category,
+                unit_type=unit_type,
+                volume_tier=(row.get("volume_tier") or "51-250").strip(),
+                quoted_unit_price=round(price, 2),
+                currency=(row.get("currency") or "USD").strip() or "USD",
+                annual_uplift_pct=float((row.get("annual_uplift_pct") or "0").strip()),
+                discount_pct=float((row.get("discount_pct") or "0").strip()),
+                source=(row.get("source") or "historical_quote").strip(),
+                effective_year=int((row.get("effective_year") or "2026").strip()),
+                notes=(row.get("notes") or "").strip(),
+            )
+            db.add(bm)
+            imported_count += 1
+        except Exception as exc:  # noqa: BLE001
+            skipped_count += 1
+            errors.append(f"Row {row_num}: {exc}")
+
+    if imported_count > 0:
+        await db.flush()
+        await record_audit_event(
+            db,
+            actor="procurement-analyst",
+            action="benchmark.csv_imported",
+            entity_type="pricing_benchmark",
+            entity_id="bulk-csv",
+            summary=(
+                f"Imported {imported_count} pricing benchmarks from CSV "
+                f"({skipped_count} skipped)."
+            ),
+        )
+        await db.commit()
+
+    return {
+        "imported_count": imported_count,
+        "skipped_count": skipped_count,
+        "errors": errors,
+    }

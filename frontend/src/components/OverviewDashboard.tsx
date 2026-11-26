@@ -12,6 +12,7 @@ import { formatCurrency, formatLabel, getBadgeTone } from '../utils/format';
 
 export type WorkspaceTab =
   | 'overview'
+  | 'vendors'
   | 'contracts'
   | 'benchmarks'
   | 'purchasing'

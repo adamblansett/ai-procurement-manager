@@ -10,14 +10,45 @@ from app.contracts.service import (
     compare_contract_against_playbook,
     request_contract_approval,
 )
+from app.core.auth import hash_password
 from app.core.config import Settings
 from app.core.governance import record_audit_event
 from app.core.llm import LLMRouter
-from app.core.models import ApprovalRequest, Vendor
+from app.core.models import ApprovalRequest, User, Vendor
 from app.purchasing.models import BudgetAccount, PurchaseOrder, VendorQuote
 from app.purchasing.service import submit_po_for_approval, validate_purchase_order
+from app.renewals.alerts import run_renewal_alert_sweep
 from app.renewals.models import RenewalItem
 from app.renewals.service import generate_renegotiation_brief
+
+DEMO_USERS: tuple[tuple[str, str, str], ...] = (
+    ("admin@procurement.local", "Morgan Blake", "admin"),
+    ("vp.finance@procurement.local", "Evelyn Shaw", "vp_finance"),
+    ("finance.director@procurement.local", "Arthur Gomez", "finance_director"),
+    ("legal.counsel@procurement.local", "Diana Morales", "legal_counsel"),
+    ("procurement.mgr@procurement.local", "Samira Chen", "procurement_manager"),
+    ("analyst@procurement.local", "Nadia Patel", "analyst"),
+)
+
+
+async def ensure_demo_users(db: AsyncSession) -> int:
+    """Idempotently seed baseline RBAC user accounts for local testing."""
+    user_count = (await db.execute(select(func.count()).select_from(User))).scalar_one()
+    if user_count > 0:
+        return 0
+    default_hash = hash_password("ProcurementDemo2026!")
+    for email, full_name, role in DEMO_USERS:
+        db.add(
+            User(
+                email=email,
+                full_name=full_name,
+                role=role,
+                password_hash=default_hash,
+                is_active=True,
+            )
+        )
+    await db.flush()
+    return len(DEMO_USERS)
 
 
 async def seed_demo_data(
@@ -28,10 +59,14 @@ async def seed_demo_data(
     """Idempotently populate realistic enterprise procurement records for local evaluation."""
     cfg = settings or llm_router.settings
     async with session_factory() as db:
+        users_seeded = await ensure_demo_users(db)
         existing_count = (await db.execute(select(func.count()).select_from(Vendor))).scalar_one()
         if existing_count > 0:
+            if users_seeded > 0:
+                await db.commit()
             return {
                 "seeded": 0,
+                "users": users_seeded,
                 "vendors": int(existing_count),
                 "contracts": 0,
                 "benchmarks": 0,
@@ -601,6 +636,8 @@ async def seed_demo_data(
 
         # Pre-generate AI Renegotiation Brief for the critical Meridian RevOps renewal
         await generate_renegotiation_brief(db, r_crm.id, llm_router, actor="seed-bootstrap")
+        # Run initial renewal notice alert sweep
+        await run_renewal_alert_sweep(db, cfg, actor="seed-bootstrap")
 
         await db.commit()
         pending_count = (
@@ -612,6 +649,7 @@ async def seed_demo_data(
         ).scalar_one()
         return {
             "seeded": 1,
+            "users": users_seeded,
             "vendors": len(vendors),
             "contracts": 3,
             "benchmarks": len(benchmarks),

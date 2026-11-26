@@ -1,13 +1,20 @@
 from datetime import timedelta
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.config import Settings
+from app.core.database import get_app_settings, get_db
 from app.core.governance import record_audit_event
 from app.core.llm import LLMRouter, get_llm_router
 from app.core.models import Vendor
+from app.renewals.alerts import (
+    RenewalAlertDispatchRead,
+    list_alert_dispatches,
+    run_renewal_alert_sweep,
+)
 from app.renewals.models import RenewalItem
 from app.renewals.schemas import (
     RenewalActionRequest,
@@ -92,6 +99,24 @@ async def create_renewal(payload: RenewalCreate, db: AsyncSession = Depends(get_
     return to_renewal_read(item, vendor.name)
 
 
+@router.get("/alerts", response_model=list[RenewalAlertDispatchRead])
+async def get_renewal_alerts(db: AsyncSession = Depends(get_db)) -> list[RenewalAlertDispatchRead]:
+    """List dispatched renewal notice threshold alerts."""
+    rows = await list_alert_dispatches(db)
+    return [RenewalAlertDispatchRead.model_validate(row) for row in rows]
+
+
+@router.post("/alerts/run")
+async def trigger_renewal_alert_sweep(
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_app_settings),
+) -> dict[str, Any]:
+    """Run threshold alert sweep across active auto-renewing agreements."""
+    result = await run_renewal_alert_sweep(db, settings)
+    await db.commit()
+    return result
+
+
 @router.get("/{renewal_id}", response_model=RenewalRead)
 async def get_renewal(renewal_id: str, db: AsyncSession = Depends(get_db)) -> RenewalRead:
     """Retrieve a tracked renewal item by ID."""
@@ -143,6 +168,27 @@ async def build_renegotiation_brief(
     response = await generate_renegotiation_brief(db, renewal_id, llm_router)
     await db.commit()
     return response
+
+
+@router.get("/{renewal_id}/export")
+async def export_renewal_brief_markdown(
+    renewal_id: str,
+    db: AsyncSession = Depends(get_db),
+    llm_router: LLMRouter = Depends(get_llm_router),
+) -> Response:
+    """Download the renegotiation brief as a Markdown dossier attachment."""
+    item = await db.get(RenewalItem, renewal_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Renewal item not found")
+    markdown = item.brief_markdown
+    if not markdown:
+        brief = await generate_renegotiation_brief(db, renewal_id, llm_router)
+        await db.commit()
+        markdown = brief.brief_markdown
+
+    safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in item.contract_title)
+    headers = {"Content-Disposition": f'attachment; filename="{safe_name}_brief.md"'}
+    return Response(content=markdown, media_type="text/markdown; charset=utf-8", headers=headers)
 
 
 @router.post("/{renewal_id}/request-action", status_code=status.HTTP_201_CREATED)

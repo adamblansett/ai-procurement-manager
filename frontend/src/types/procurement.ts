@@ -1,3 +1,48 @@
+export interface AuthUser {
+  id: string;
+  email: string;
+  full_name: string;
+  role: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface AuthTokenResponse {
+  access_token: string;
+  token_type: string;
+  user: AuthUser;
+}
+
+export interface ClauseSearchHit {
+  contract_id: string;
+  contract_title: string;
+  vendor_id: string;
+  vendor_name: string;
+  clause_type: string;
+  status: string;
+  risk_level: string;
+  chunk_text: string;
+  similarity_score: number;
+}
+
+export interface RenewalAlertDispatch {
+  id: string;
+  renewal_id: string;
+  threshold_days: number;
+  channel: string;
+  delivery_status: string;
+  recipient_target: string;
+  message_summary: string;
+  dispatched_at: string;
+}
+
+export interface CsvImportResult {
+  imported_count: number;
+  skipped_count?: number;
+  updated_count?: number;
+  errors: string[];
+}
+
 export interface HealthStatus {
   status: string;
   service: string;

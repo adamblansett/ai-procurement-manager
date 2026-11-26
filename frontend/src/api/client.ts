@@ -2,11 +2,15 @@ import type {
   ApprovalRequest,
   AuditChainVerification,
   AuditLogEntry,
+  AuthTokenResponse,
+  AuthUser,
   BenchmarkSummary,
   BudgetAccount,
+  ClauseSearchHit,
   Contract,
   ContractDetail,
   ContractPairComparison,
+  CsvImportResult,
   DashboardSummary,
   HealthStatus,
   PlaybookRule,
@@ -14,19 +18,55 @@ import type {
   PricingBenchmark,
   PurchaseOrder,
   QuoteAnalysisResult,
+  RenewalAlertDispatch,
   RenewalBriefResponse,
   RenewalItem,
   Vendor,
   VendorQuote,
 } from '../types/procurement';
 
+const TOKEN_STORAGE_KEY = 'ai_procurement_auth_token';
+let memoryToken: string | null = null;
+
+export function getAuthToken(): string | null {
+  if (memoryToken) return memoryToken;
+  try {
+    return window.localStorage.getItem(TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setAuthToken(token: string | null): void {
+  memoryToken = token;
+  try {
+    if (token) {
+      window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    } else {
+      window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage errors in restricted environments.
+  }
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData;
+  const token = getAuthToken();
+  const headers: Record<string, string> = {};
+  if (!isFormData) {
+    headers['Content-Type'] = 'application/json';
+  }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   const response = await fetch(path, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
     ...init,
+    headers: {
+      ...headers,
+      ...(init?.headers as Record<string, string> | undefined),
+    },
   });
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
@@ -48,11 +88,39 @@ export const procurementApi = {
   getDashboardSummary: () => apiFetch<DashboardSummary>('/api/v1/dashboard/summary'),
   triggerSeed: () => apiFetch<Record<string, number>>('/api/v1/seed', { method: 'POST' }),
 
+  login: (email: string, password: string) =>
+    apiFetch<AuthTokenResponse>('/api/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+  register: (payload: { email: string; full_name: string; password: string; role: string }) =>
+    apiFetch<AuthTokenResponse>('/api/v1/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getMe: () => apiFetch<AuthUser>('/api/v1/auth/me'),
+  listUsers: () => apiFetch<AuthUser[]>('/api/v1/auth/users'),
+
   listVendors: () => apiFetch<Vendor[]>('/api/v1/vendors'),
   createVendor: (payload: Partial<Vendor>) =>
     apiFetch<Vendor>('/api/v1/vendors', { method: 'POST', body: JSON.stringify(payload) }),
+  updateVendor: (id: string, payload: Partial<Vendor>) =>
+    apiFetch<Vendor>(`/api/v1/vendors/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
 
   listPlaybooks: () => apiFetch<PlaybookRule[]>('/api/v1/contracts/playbooks'),
+  createPlaybookRule: (payload: {
+    name: string;
+    clause_type: string;
+    preferred_position: string;
+    fallback_position?: string;
+    max_acceptable_value?: number | null;
+    severity: string;
+    guidance?: string;
+  }) =>
+    apiFetch<PlaybookRule>('/api/v1/contracts/playbooks', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   listContracts: () => apiFetch<Contract[]>('/api/v1/contracts'),
   getContract: (id: string) => apiFetch<ContractDetail>(`/api/v1/contracts/${id}`),
   createContract: (payload: {
@@ -66,6 +134,34 @@ export const procurementApi = {
     apiFetch<ContractDetail>('/api/v1/contracts', {
       method: 'POST',
       body: JSON.stringify(payload),
+    }),
+  uploadContract: (payload: {
+    vendor_id: string;
+    title: string;
+    contract_type: string;
+    annual_value: number;
+    file: File;
+  }) => {
+    const form = new FormData();
+    form.append('vendor_id', payload.vendor_id);
+    form.append('title', payload.title);
+    form.append('contract_type', payload.contract_type);
+    form.append('annual_value', String(payload.annual_value));
+    form.append('auto_compare', 'true');
+    form.append('file', payload.file);
+    return apiFetch<ContractDetail>('/api/v1/contracts/upload', {
+      method: 'POST',
+      body: form,
+    });
+  },
+  searchContractClauses: (query: string, clauseType?: string) =>
+    apiFetch<ClauseSearchHit[]>('/api/v1/contracts/search', {
+      method: 'POST',
+      body: JSON.stringify({
+        query,
+        clause_type: clauseType || undefined,
+        top_k: 8,
+      }),
     }),
   recompareContract: (id: string) =>
     apiFetch<ContractDetail>(`/api/v1/contracts/${id}/compare`, { method: 'POST' }),
@@ -103,6 +199,14 @@ export const procurementApi = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  importBenchmarksCsv: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return apiFetch<CsvImportResult>('/api/v1/benchmarks/import-csv', {
+      method: 'POST',
+      body: form,
+    });
+  },
   analyzeQuote: (payload: {
     sku_code?: string;
     category: string;
@@ -118,7 +222,37 @@ export const procurementApi = {
     }),
 
   listBudgets: () => apiFetch<BudgetAccount[]>('/api/v1/purchasing/budgets'),
+  createBudget: (payload: {
+    cost_center_code: string;
+    department: string;
+    fiscal_year: number;
+    annual_budget: number;
+    committed_amount: number;
+    owner_name: string;
+  }) =>
+    apiFetch<BudgetAccount>('/api/v1/purchasing/budgets', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  importBudgetsCsv: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return apiFetch<CsvImportResult>('/api/v1/purchasing/budgets/import-csv', {
+      method: 'POST',
+      body: form,
+    });
+  },
   listQuotes: () => apiFetch<VendorQuote[]>('/api/v1/purchasing/quotes'),
+  createQuote: (payload: {
+    vendor_id: string;
+    quote_number: string;
+    valid_until: string;
+    line_items: POLineItem[];
+  }) =>
+    apiFetch<VendorQuote>('/api/v1/purchasing/quotes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   listPurchaseOrders: () => apiFetch<PurchaseOrder[]>('/api/v1/purchasing/orders'),
   createPurchaseOrder: (payload: {
     po_number: string;
@@ -167,6 +301,14 @@ export const procurementApi = {
     apiFetch<RenewalBriefResponse>(`/api/v1/renewals/${id}/generate-brief`, {
       method: 'POST',
     }),
+  listRenewalAlerts: () => apiFetch<RenewalAlertDispatch[]>('/api/v1/renewals/alerts'),
+  runRenewalAlertSweep: () =>
+    apiFetch<{
+      checked_count: number;
+      dispatched_count: number;
+      dispatches: RenewalAlertDispatch[];
+    }>('/api/v1/renewals/alerts/run', { method: 'POST' }),
+  exportRenewalBriefUrl: (id: string) => `/api/v1/renewals/${id}/export`,
   requestRenewalAction: (
     id: string,
     actionType: 'send_non_renewal_notice' | 'approve_renewal_terms' | 'request_renegotiation',
@@ -187,7 +329,9 @@ export const procurementApi = {
 
   listApprovals: (status?: string) =>
     apiFetch<ApprovalRequest[]>(
-      status ? `/api/v1/governance/approvals?status=${encodeURIComponent(status)}` : '/api/v1/governance/approvals'
+      status
+        ? `/api/v1/governance/approvals?status=${encodeURIComponent(status)}`
+        : '/api/v1/governance/approvals'
     ),
   decideApproval: (
     id: string,
@@ -206,4 +350,6 @@ export const procurementApi = {
   listAuditLogs: () => apiFetch<AuditLogEntry[]>('/api/v1/governance/audit-logs?limit=100'),
   verifyAuditChain: () =>
     apiFetch<AuditChainVerification>('/api/v1/governance/audit-logs/verify'),
+  exportAuditLogsUrl: (exportFormat: 'csv' | 'json') =>
+    `/api/v1/governance/audit-logs/export?export_format=${exportFormat}`,
 };

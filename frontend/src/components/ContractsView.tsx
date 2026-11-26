@@ -1,7 +1,8 @@
 import { type ChangeEvent, type FormEvent, useEffect, useState } from 'react';
-import { BookOpen, FilePlus2, GitCompareArrows, RefreshCw, ShieldAlert } from 'lucide-react';
+import { BookOpen, FilePlus2, GitCompareArrows, RefreshCw, Search, ShieldAlert } from 'lucide-react';
 import { procurementApi } from '../api/client';
 import type {
+  ClauseSearchHit,
   Contract,
   ContractDetail,
   ContractPairComparison,
@@ -19,18 +20,29 @@ export function ContractsView({ vendors, onDataChange }: ContractsViewProps) {
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [playbooks, setPlaybooks] = useState<PlaybookRule[]>([]);
   const [selectedDetail, setSelectedDetail] = useState<ContractDetail | null>(null);
-  const [mode, setMode] = useState<'detail' | 'pair' | 'playbooks'>('detail');
+  const [mode, setMode] = useState<'detail' | 'pair' | 'playbooks' | 'search'>('detail');
   const [showIngest, setShowIngest] = useState(false);
 
   const [leftId, setLeftId] = useState('');
   const [rightId, setRightId] = useState('');
   const [pairComparison, setPairComparison] = useState<ContractPairComparison | null>(null);
 
+  const [searchQuery, setSearchQuery] = useState('liability cap 12 months data breach');
+  const [searchClauseFilter, setSearchClauseFilter] = useState('');
+  const [searchHits, setSearchHits] = useState<ClauseSearchHit[]>([]);
+
+  const [showAddRule, setShowAddRule] = useState(false);
+  const [ruleName, setRuleName] = useState('');
+  const [ruleClauseType, setRuleClauseType] = useState('price_uplift');
+  const [rulePreferred, setRulePreferred] = useState('');
+  const [ruleSeverity, setRuleSeverity] = useState('high');
+
   const [vendorId, setVendorId] = useState('');
   const [title, setTitle] = useState('');
   const [contractType, setContractType] = useState('MSA');
   const [annualValue, setAnnualValue] = useState('120000');
   const [rawText, setRawText] = useState('');
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
 
   const [approvalNotes, setApprovalNotes] = useState('');
   const [requestedBy, setRequestedBy] = useState('Samira Chen');
@@ -137,13 +149,20 @@ export function ContractsView({ vendors, onDataChange }: ContractsViewProps) {
   function handleFileUpload(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setRawText(reader.result);
-      }
-    };
-    reader.readAsText(file);
+    setUploadFile(file);
+    if (!title) {
+      setTitle(file.name.replace(/\.[^.]+$/, ''));
+    }
+    const lower = file.name.toLowerCase();
+    if (lower.endsWith('.txt') || lower.endsWith('.md')) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          setRawText(reader.result);
+        }
+      };
+      reader.readAsText(file);
+    }
   }
 
   async function handleIngestSubmit(e: FormEvent) {
@@ -151,17 +170,26 @@ export function ContractsView({ vendors, onDataChange }: ContractsViewProps) {
     setBusy(true);
     setError(null);
     try {
-      const created = await procurementApi.createContract({
-        vendor_id: vendorId,
-        title,
-        contract_type: contractType,
-        annual_value: Number(annualValue) || 0,
-        raw_text: rawText,
-        auto_compare: true,
-      });
+      const created = uploadFile
+        ? await procurementApi.uploadContract({
+            vendor_id: vendorId,
+            title,
+            contract_type: contractType,
+            annual_value: Number(annualValue) || 0,
+            file: uploadFile,
+          })
+        : await procurementApi.createContract({
+            vendor_id: vendorId,
+            title,
+            contract_type: contractType,
+            annual_value: Number(annualValue) || 0,
+            raw_text: rawText,
+            auto_compare: true,
+          });
       setShowIngest(false);
       setTitle('');
       setRawText('');
+      setUploadFile(null);
       setSelectedDetail(created);
       setMode('detail');
       setStatusMessage(`Ingested & compared '${created.title}' (${created.risk_score}/100 risk).`);
@@ -169,6 +197,43 @@ export function ContractsView({ vendors, onDataChange }: ContractsViewProps) {
       await onDataChange();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to ingest contract');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSemanticSearch(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const hits = await procurementApi.searchContractClauses(searchQuery, searchClauseFilter);
+      setSearchHits(hits);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Clause search failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCreatePlaybookRule(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await procurementApi.createPlaybookRule({
+        name: ruleName,
+        clause_type: ruleClauseType,
+        preferred_position: rulePreferred,
+        severity: ruleSeverity,
+      });
+      setShowAddRule(false);
+      setRuleName('');
+      setRulePreferred('');
+      await loadContracts();
+      setStatusMessage('Created custom playbook baseline rule.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create playbook rule');
     } finally {
       setBusy(false);
     }
@@ -186,6 +251,14 @@ export function ContractsView({ vendors, onDataChange }: ContractsViewProps) {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMode(mode === 'search' ? 'detail' : 'search')}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            <Search className="h-3.5 w-3.5" />
+            {mode === 'search' ? 'Back to Contracts' : 'Semantic Precedent Search'}
+          </button>
           <button
             type="button"
             onClick={() => setMode(mode === 'pair' ? 'detail' : 'pair')}
@@ -283,26 +356,42 @@ export function ContractsView({ vendors, onDataChange }: ContractsViewProps) {
           </div>
 
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <span className="font-medium text-slate-700">
-                Contract Clauses Text (paste or load .txt / .md)
+                Upload Document (.pdf, .docx, .txt, .md) or Paste Clause Text
               </span>
               <input
                 type="file"
-                accept=".txt,.md"
+                accept=".pdf,.docx,.txt,.md"
                 onChange={handleFileUpload}
                 className="text-[11px] text-slate-500"
               />
             </div>
-            <textarea
-              rows={5}
-              value={rawText}
-              onChange={(e) => setRawText(e.target.value)}
-              placeholder="Paste MSA clauses covering auto-renewal notice, uplift cap, liability cap, payment terms, DPA, indemnification, and SLA..."
-              className="w-full rounded-lg border border-slate-200 p-2.5 font-mono text-xs"
-              required
-              minLength={10}
-            />
+            {uploadFile ? (
+              <div className="flex items-center justify-between rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-900">
+                <span>
+                  Ready to upload &amp; extract: <strong>{uploadFile.name}</strong> (
+                  {Math.max(1, Math.round(uploadFile.size / 1024))} KB)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setUploadFile(null)}
+                  className="text-[11px] font-semibold text-indigo-700 hover:underline"
+                >
+                  Clear file
+                </button>
+              </div>
+            ) : (
+              <textarea
+                rows={5}
+                value={rawText}
+                onChange={(e) => setRawText(e.target.value)}
+                placeholder="Paste MSA clauses covering auto-renewal notice, uplift cap, liability cap, payment terms, DPA, indemnification, and SLA..."
+                className="w-full rounded-lg border border-slate-200 p-2.5 font-mono text-xs"
+                required={!uploadFile}
+                minLength={uploadFile ? undefined : 10}
+              />
+            )}
           </div>
           <div className="flex justify-end gap-2">
             <button
@@ -323,8 +412,125 @@ export function ContractsView({ vendors, onDataChange }: ContractsViewProps) {
         </form>
       )}
 
-      {mode === 'playbooks' ? (
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      {mode === 'search' ? (
+        <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <form onSubmit={(e) => void handleSemanticSearch(e)} className="flex flex-wrap gap-2">
+            <input
+              aria-label="Semantic clause query"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search cross-vendor clause precedents (e.g. 30-day termination for convenience)..."
+              className="min-w-[240px] flex-1 rounded-lg border border-slate-200 px-3 py-2 text-xs"
+              required
+            />
+            <select
+              value={searchClauseFilter}
+              onChange={(e) => setSearchClauseFilter(e.target.value)}
+              className="rounded-lg border border-slate-200 px-2.5 py-2 text-xs"
+            >
+              <option value="">All Clause Families</option>
+              <option value="auto_renewal">Auto Renewal</option>
+              <option value="price_uplift">Price Uplift</option>
+              <option value="liability_cap">Liability Cap</option>
+              <option value="payment_terms">Payment Terms</option>
+              <option value="termination_convenience">Termination Convenience</option>
+              <option value="data_residency">Data Residency</option>
+              <option value="indemnification">Indemnification</option>
+              <option value="sla_uptime">SLA Uptime</option>
+            </select>
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
+            >
+              Search Clauses
+            </button>
+          </form>
+
+          <div className="space-y-2.5">
+            {searchHits.map((hit, idx) => (
+              <div
+                key={`${hit.contract_id}-${hit.clause_type}-${idx}`}
+                className="rounded-lg border border-slate-200 p-3.5 text-xs"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-semibold text-slate-900">
+                    {hit.vendor_name} &mdash; {hit.contract_title}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-800">
+                      Similarity {(hit.similarity_score * 100).toFixed(0)}%
+                    </span>
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${getBadgeTone(hit.status)}`}
+                    >
+                      {formatLabel(hit.clause_type)} ({formatLabel(hit.status)})
+                    </span>
+                  </div>
+                </div>
+                <p className="mt-1.5 text-slate-700">{hit.chunk_text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : mode === 'playbooks' ? (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setShowAddRule((prev) => !prev)}
+              className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+            >
+              + Add Playbook Rule
+            </button>
+          </div>
+          {showAddRule && (
+            <form
+              onSubmit={(e) => void handleCreatePlaybookRule(e)}
+              className="grid gap-3 rounded-xl border border-indigo-200 bg-white p-4 shadow-sm sm:grid-cols-4"
+            >
+              <input
+                value={ruleName}
+                onChange={(e) => setRuleName(e.target.value)}
+                placeholder="Rule Name"
+                className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
+                required
+              />
+              <input
+                value={ruleClauseType}
+                onChange={(e) => setRuleClauseType(e.target.value)}
+                placeholder="clause_type"
+                className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
+                required
+              />
+              <input
+                value={rulePreferred}
+                onChange={(e) => setRulePreferred(e.target.value)}
+                placeholder="Preferred commercial position"
+                className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
+                required
+              />
+              <div className="flex gap-2">
+                <select
+                  value={ruleSeverity}
+                  onChange={(e) => setRuleSeverity(e.target.value)}
+                  className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs"
+                >
+                  <option value="critical">Critical</option>
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
+                </select>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white"
+                >
+                  Save
+                </button>
+              </div>
+            </form>
+          )}
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <table className="w-full text-left text-xs">
             <thead className="border-b border-slate-200 bg-slate-50 text-[11px] uppercase text-slate-500">
               <tr>
@@ -354,6 +560,7 @@ export function ContractsView({ vendors, onDataChange }: ContractsViewProps) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       ) : mode === 'pair' ? (
         <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">

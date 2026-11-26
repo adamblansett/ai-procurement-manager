@@ -1,18 +1,20 @@
 import { useEffect, useState } from 'react';
-import { Check, LockKeyhole, ShieldCheck, X } from 'lucide-react';
+import { Check, Download, LockKeyhole, ShieldCheck, X } from 'lucide-react';
 import { procurementApi } from '../api/client';
 import type {
   ApprovalRequest,
   AuditChainVerification,
   AuditLogEntry,
+  AuthUser,
 } from '../types/procurement';
 import { formatCurrency, formatLabel, getBadgeTone } from '../utils/format';
 
 interface GovernanceViewProps {
+  currentUser: AuthUser | null;
   onDataChange: () => Promise<void>;
 }
 
-export function GovernanceView({ onDataChange }: GovernanceViewProps) {
+export function GovernanceView({ currentUser, onDataChange }: GovernanceViewProps) {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [statusFilter, setStatusFilter] = useState<'pending' | 'approved' | 'rejected' | 'all'>(
@@ -42,6 +44,8 @@ export function GovernanceView({ onDataChange }: GovernanceViewProps) {
     void loadGovernance(statusFilter);
   }, [statusFilter]);
 
+  const effectiveReviewer = currentUser?.full_name || reviewerName || 'Finance Reviewer';
+
   async function handleDecide(approvalId: string, decision: 'approved' | 'rejected') {
     setBusy(true);
     setError(null);
@@ -50,7 +54,7 @@ export function GovernanceView({ onDataChange }: GovernanceViewProps) {
       const updated = await procurementApi.decideApproval(
         approvalId,
         decision,
-        reviewerName || 'Finance Reviewer',
+        effectiveReviewer,
         decisionNotes || `${decision.toUpperCase()} via Governance Desk.`
       );
       setStatusMessage(`Recorded HITL ${updated.status} decision for "${updated.title}".`);
@@ -85,7 +89,17 @@ export function GovernanceView({ onDataChange }: GovernanceViewProps) {
         </h2>
         <p className="text-xs text-slate-600">
           Explicit review gates for PO commitments, high-risk contracts, and outbound non-renewal
-          notices backed by a SHA-256 hash-chained audit trail.
+          notices backed by a SHA-256 hash-chained audit trail.{' '}
+          {currentUser ? (
+            <span className="font-semibold text-indigo-700">
+              Active RBAC Identity: {currentUser.full_name} ({formatLabel(currentUser.role)}) —
+              Separation of duties enforced.
+            </span>
+          ) : (
+            <span className="text-slate-500">
+              Separation of duties enforced (sign in via top bar to enforce role gates).
+            </span>
+          )}
         </p>
       </div>
 
@@ -214,14 +228,32 @@ export function GovernanceView({ onDataChange }: GovernanceViewProps) {
               Immutable Audit Log ({auditLogs.length} recent entries)
             </h3>
           </div>
-          <button
-            type="button"
-            onClick={() => void handleVerifyChain()}
-            disabled={busy}
-            className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100"
-          >
-            Verify Hash Chain Integrity
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href={procurementApi.exportAuditLogsUrl('csv')}
+              download
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export CSV
+            </a>
+            <a
+              href={procurementApi.exportAuditLogsUrl('json')}
+              download
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export Signed JSON
+            </a>
+            <button
+              type="button"
+              onClick={() => void handleVerifyChain()}
+              disabled={busy}
+              className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100"
+            >
+              Verify Hash Chain Integrity
+            </button>
+          </div>
         </div>
 
         {verification && (

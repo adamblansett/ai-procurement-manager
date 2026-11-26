@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import update
 
+from app.core.auth import create_access_token
 from app.core.config import Settings
 from app.core.governance import verify_audit_chain
 from app.core.models import AuditLog
@@ -58,9 +59,7 @@ async def test_renewal_brief_hitl_action_and_seeded_dashboard(
     assert renewal["urgency"] == "critical"
     assert renewal["days_to_notice_deadline"] == 15
 
-    brief_resp = await seeded_client.post(
-        f"/api/v1/renewals/{renewal['id']}/generate-brief"
-    )
+    brief_resp = await seeded_client.post(f"/api/v1/renewals/{renewal['id']}/generate-brief")
     assert brief_resp.status_code == 200
     brief = brief_resp.json()
     assert brief["projected_value"] == 86400.0
@@ -109,9 +108,7 @@ async def test_audit_chain_detects_tampering_and_seed_disabled_in_prod(
     # Tamper with an immutable audit row directly in DB and verify detection
     async with app_instance.state.session_factory() as db:
         await db.execute(
-            update(AuditLog)
-            .where(AuditLog.sequence_num == 1)
-            .values(summary="TAMPERED ENTRY")
+            update(AuditLog).where(AuditLog.sequence_num == 1).values(summary="TAMPERED ENTRY")
         )
         await db.commit()
 
@@ -125,19 +122,28 @@ async def test_audit_chain_detects_tampering_and_seed_disabled_in_prod(
         direct = await verify_audit_chain(db)
         assert direct["valid"] is False
 
-    # Verify /seed is blocked in production mode
-    prod_app = create_app(
-        Settings(
-            app_env="production",
-            auth_secret_key="prod-secret-value-at-least-32-characters-long",
-            cors_origins="https://procurement.internal",
-            database_url="sqlite+aiosqlite:///:memory:",
-            auto_seed_demo_data=False,
-        )
+    # Verify /seed is blocked in production mode even when authenticated
+    prod_settings = Settings(
+        app_env="production",
+        auth_secret_key="prod-secret-value-at-least-32-characters-long",
+        auth_required=True,
+        cors_origins="https://procurement.internal",
+        database_url="sqlite+aiosqlite:///:memory:",
+        auto_seed_demo_data=False,
+    )
+    prod_app = create_app(prod_settings)
+    prod_token = create_access_token(
+        user_id="u-prod",
+        email="admin@procurement.internal",
+        full_name="Prod Admin",
+        role="admin",
+        settings=prod_settings,
     )
     async with AsyncClient(
         transport=ASGITransport(app=prod_app), base_url="http://test"
     ) as prod_client:
-        prod_seed = await prod_client.post("/api/v1/seed")
+        prod_seed = await prod_client.post(
+            "/api/v1/seed", headers={"Authorization": f"Bearer {prod_token}"}
+        )
         assert prod_seed.status_code == 403
     await prod_app.state.engine.dispose()

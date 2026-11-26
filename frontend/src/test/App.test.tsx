@@ -156,10 +156,47 @@ function createStubFetch() {
         ],
       });
     }
+    if (url === '/api/v1/vendors' && method === 'POST') {
+      return jsonResponse({
+        ...MOCK_VENDORS[0],
+        id: 'v-2',
+        name: 'Vertex Cloud Systems',
+        annual_spend: 50000,
+      });
+    }
     if (url === '/api/v1/vendors') return jsonResponse(MOCK_VENDORS);
+    if (url === '/api/v1/auth/login' && method === 'POST') {
+      return jsonResponse({
+        access_token: 'jwt.demo.token',
+        token_type: 'bearer',
+        user: {
+          id: 'u-1',
+          email: 'finance.director@procurement.local',
+          full_name: 'Arthur Gomez',
+          role: 'finance_director',
+          is_active: true,
+          created_at: '2026-11-24T12:00:00Z',
+        },
+      });
+    }
     if (url === '/api/v1/contracts') return jsonResponse(MOCK_CONTRACTS);
     if (url === '/api/v1/contracts/playbooks') return jsonResponse([]);
     if (url === '/api/v1/contracts/c-1') return jsonResponse(MOCK_CONTRACT_DETAIL);
+    if (url === '/api/v1/contracts/search' && method === 'POST') {
+      return jsonResponse([
+        {
+          contract_id: 'c-1',
+          contract_title: 'Meridian RevOps MSA',
+          vendor_id: 'v-1',
+          vendor_name: 'Meridian RevOps CRM',
+          clause_type: 'liability_cap',
+          status: 'deviation',
+          risk_level: 'critical',
+          chunk_text: 'Aggregate liability capped at 3 months fees.',
+          similarity_score: 0.89,
+        },
+      ]);
+    }
 
     if (url === '/api/v1/benchmarks') return jsonResponse([]);
     if (url === '/api/v1/benchmarks/summary') {
@@ -261,6 +298,23 @@ function createStubFetch() {
     }
 
     if (url === '/api/v1/renewals') return jsonResponse([MOCK_RENEWAL]);
+    if (url === '/api/v1/renewals/alerts') {
+      return jsonResponse([
+        {
+          id: 'al-1',
+          renewal_id: 'r-1',
+          threshold_days: 30,
+          channel: 'in_app',
+          delivery_status: 'simulated',
+          recipient_target: 'Samira Chen',
+          message_summary: '[CRITICAL] Meridian RevOps: 12d remaining',
+          dispatched_at: '2026-11-26T07:00:00Z',
+        },
+      ]);
+    }
+    if (url === '/api/v1/renewals/alerts/run' && method === 'POST') {
+      return jsonResponse({ checked_count: 3, dispatched_count: 1, dispatches: [] });
+    }
     if (url === '/api/v1/renewals/r-1/generate-brief' && method === 'POST') {
       return jsonResponse({
         renewal: { ...MOCK_RENEWAL, decision_status: 'renegotiating' },
@@ -389,6 +443,57 @@ describe('AI Procurement & Vendor Manager workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Verify Hash Chain Integrity' }));
     await waitFor(() => {
       expect(screen.getByText(/SHA-256 Hash Chain Verified: 12 entries intact/i)).toBeInTheDocument();
+    });
+  });
+
+  it('supports RBAC sign-in, Vendors directory, semantic clause search, and alert sweeps', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText(/API Healthy \(mock\)/i)).toBeInTheDocument();
+    });
+
+    // RBAC Sign-In modal
+    fireEvent.click(screen.getByRole('button', { name: /Sign In \(RBAC\)/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'RBAC Authentication' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign In with Password' }));
+    await waitFor(() => {
+      expect(screen.getByText(/Arthur Gomez \(Finance Director\)/i)).toBeInTheDocument();
+    });
+
+    // Vendors tab
+    fireEvent.click(screen.getByRole('button', { name: 'Vendors' }));
+    await waitFor(() => {
+      expect(screen.getByText('Supplier Directory')).toBeInTheDocument();
+    });
+
+    // Semantic Precedent Search in Contracts
+    fireEvent.click(screen.getByRole('button', { name: 'Contracts' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Semantic Precedent Search' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Semantic Precedent Search' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Search Clauses' }));
+    await waitFor(() => {
+      expect(screen.getByText(/Similarity 89%/i)).toBeInTheDocument();
+    });
+
+    // Renewal Alert Sweep
+    fireEvent.click(screen.getByRole('button', { name: 'Renewals' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Run Alert Sweep' })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Run Alert Sweep' }));
+    await waitFor(() => {
+      expect(screen.getByText(/dispatched 1 new alert/i)).toBeInTheDocument();
+    });
+
+    // Audit Export controls in Governance
+    fireEvent.click(screen.getByRole('button', { name: /Approvals & Audit/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Export CSV')).toBeInTheDocument();
+      expect(screen.getByText('Export Signed JSON')).toBeInTheDocument();
     });
   });
 });

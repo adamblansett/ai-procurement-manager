@@ -40,7 +40,16 @@ class Settings(BaseSettings):
     po_vp_approval_threshold: float = 150000.0
 
     auth_secret_key: str = _DEFAULT_DEV_SECRET
+    auth_required: bool = False
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 480
     rate_limit_enabled: bool = True
+    rate_limit_requests_per_minute: int = 120
+    embedding_provider: str = "deterministic"
+    embedding_dimensions: int = 384
+    redis_url: str = "redis://redis:6379/0"
+    alert_webhook_url: str = ""
+    otel_enabled: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -76,5 +85,7 @@ def validate_production_security(settings: Settings) -> None:
         )
     if "*" in settings.cors_origin_list:
         errors.append("CORS_ORIGINS must not contain wildcard '*' in production.")
+    if not settings.auth_required:
+        errors.append("AUTH_REQUIRED must be true in production.")
     if errors:
         raise RuntimeError("Production security validation failed: " + " | ".join(errors))

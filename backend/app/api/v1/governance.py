@@ -1,12 +1,16 @@
+import csv
+import io
+import json
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.contracts.models import Contract
+from app.core.auth import TokenPayload, get_optional_current_user, role_can_approve
 from app.core.database import get_db
 from app.core.governance import record_audit_event, verify_audit_chain
 from app.core.models import ApprovalRequest, AuditLog
@@ -88,8 +92,9 @@ async def decide_approval(
     approval_id: str,
     payload: ApprovalDecisionRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: TokenPayload | None = Depends(get_optional_current_user),
 ) -> ApprovalRequest:
-    """Approve or reject a pending HITL request and propagate state to the target record."""
+    """Approve or reject a pending HITL request with RBAC and separation-of-duties checks."""
     approval = await db.get(ApprovalRequest, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="Approval request not found")
@@ -99,8 +104,30 @@ async def decide_approval(
             detail=f"Approval request already resolved with status '{approval.status}'.",
         )
 
+    if current_user is not None:
+        if not role_can_approve(current_user.role, approval.required_role):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Role '{current_user.role}' cannot decide approvals requiring "
+                    f"'{approval.required_role}'."
+                ),
+            )
+        effective_actor = current_user.full_name
+    else:
+        effective_actor = payload.decided_by
+
+    if effective_actor.strip().lower() == approval.requested_by.strip().lower():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Separation of duties violation: requester cannot approve or reject "
+                "their own request."
+            ),
+        )
+
     approval.status = payload.decision
-    approval.decided_by = payload.decided_by
+    approval.decided_by = effective_actor
     approval.decision_notes = payload.decision_notes
     approval.decided_at = datetime.now(UTC)
 
@@ -141,7 +168,7 @@ async def decide_approval(
     note_text = payload.decision_notes or "No notes"
     await record_audit_event(
         db,
-        actor=payload.decided_by,
+        actor=effective_actor,
         action=f"approval.{payload.decision}",
         entity_type=approval.entity_type,
         entity_id=approval.entity_id,
@@ -180,3 +207,60 @@ async def verify_audit_log_chain(
     """Verify cryptographic SHA-256 continuity across the entire audit ledger."""
     result = await verify_audit_chain(db)
     return AuditChainVerificationRead(**result)
+
+
+@router.get("/audit-logs/export")
+async def export_audit_logs(
+    export_format: Literal["csv", "json"] = Query(default="json"),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Export immutable hash-chained audit logs as CSV or signed JSON bundle."""
+    rows = (
+        (await db.execute(select(AuditLog).order_by(AuditLog.sequence_num.asc()))).scalars().all()
+    )
+    if export_format == "csv":
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(
+            [
+                "sequence_num",
+                "created_at",
+                "actor",
+                "action",
+                "entity_type",
+                "entity_id",
+                "summary",
+                "prev_hash",
+                "entry_hash",
+            ]
+        )
+        for row in rows:
+            writer.writerow(
+                [
+                    row.sequence_num,
+                    row.created_at.isoformat(),
+                    row.actor,
+                    row.action,
+                    row.entity_type,
+                    row.entity_id,
+                    row.summary,
+                    row.prev_hash,
+                    row.entry_hash,
+                ]
+            )
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="audit_ledger.csv"'},
+        )
+
+    verification = await verify_audit_chain(db)
+    bundle = {
+        "chain_verification": verification,
+        "entries": [AuditLogRead.model_validate(row).model_dump(mode="json") for row in rows],
+    }
+    return Response(
+        content=json.dumps(bundle, indent=2),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="audit_ledger_signed.json"'},
+    )

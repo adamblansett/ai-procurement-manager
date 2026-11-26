@@ -1,5 +1,5 @@
-import { type FormEvent, useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, FileCheck2, PlusCircle, RefreshCw } from 'lucide-react';
+import { type ChangeEvent, type FormEvent, useEffect, useState } from 'react';
+import { AlertCircle, CheckCircle2, FileCheck2, PlusCircle, RefreshCw, Upload } from 'lucide-react';
 import { procurementApi } from '../api/client';
 import type {
   BudgetAccount,
@@ -21,6 +21,20 @@ export function PurchasingView({ vendors, onDataChange }: PurchasingViewProps) {
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [selectedPo, setSelectedPo] = useState<PurchaseOrder | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [showBudgetForm, setShowBudgetForm] = useState(false);
+  const [showQuoteForm, setShowQuoteForm] = useState(false);
+
+  const [newBudgetCode, setNewBudgetCode] = useState('CC-OPS-501');
+  const [newBudgetDept, setNewBudgetDept] = useState('IT Operations');
+  const [newBudgetAmt, setNewBudgetAmt] = useState('150000');
+  const [newBudgetOwner, setNewBudgetOwner] = useState('Morgan Blake');
+
+  const [newQuoteNum, setNewQuoteNum] = useState('QT-2026-901');
+  const [newQuoteVendor, setNewQuoteVendor] = useState('');
+  const [newQuoteValidUntil, setNewQuoteValidUntil] = useState('2027-01-31');
+  const [newQuoteSku, setNewQuoteSku] = useState('CLD-K8S-NODE');
+  const [newQuoteQty, setNewQuoteQty] = useState('5');
+  const [newQuotePrice, setNewQuotePrice] = useState('3450');
 
   // Create PO form state
   const [poNumber, setPoNumber] = useState('PO-2026-1099');
@@ -67,8 +81,81 @@ export function PurchasingView({ vendors, onDataChange }: PurchasingViewProps) {
   useEffect(() => {
     if (!vendorId && vendors.length > 0) {
       setVendorId(vendors[0].id);
+      setNewQuoteVendor(vendors[0].id);
     }
   }, [vendors, vendorId]);
+
+  async function handleCreateBudget(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await procurementApi.createBudget({
+        cost_center_code: newBudgetCode,
+        department: newBudgetDept,
+        fiscal_year: 2026,
+        annual_budget: Number(newBudgetAmt),
+        committed_amount: 0,
+        owner_name: newBudgetOwner,
+      });
+      setShowBudgetForm(false);
+      setStatusMessage(`Created cost-center budget ${newBudgetCode}.`);
+      await loadPurchasing();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Budget creation failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleBudgetsCsvUpload(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await procurementApi.importBudgetsCsv(file);
+      setStatusMessage(
+        `Budgets CSV: ${res.imported_count} added, ${res.updated_count ?? 0} updated.`
+      );
+      await loadPurchasing();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Budgets CSV import failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCreateQuote(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const qtyNum = Number(newQuoteQty) || 1;
+      const priceNum = Number(newQuotePrice) || 0;
+      const created = await procurementApi.createQuote({
+        vendor_id: newQuoteVendor || vendorId,
+        quote_number: newQuoteNum,
+        valid_until: newQuoteValidUntil,
+        line_items: [
+          {
+            sku_code: newQuoteSku,
+            description: `${newQuoteSku} Quoted Line`,
+            quantity: qtyNum,
+            unit_price: priceNum,
+            line_total: Number((qtyNum * priceNum).toFixed(2)),
+          },
+        ],
+      });
+      setShowQuoteForm(false);
+      setStatusMessage(`Registered quote ${created.quote_number}.`);
+      await loadPurchasing();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Quote creation failed');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function handleSelectQuote(nextQuoteId: string) {
     setQuoteId(nextQuoteId);
@@ -173,15 +260,150 @@ export function PurchasingView({ vendors, onDataChange }: PurchasingViewProps) {
             thresholds.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowCreate((prev) => !prev)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
-        >
-          <PlusCircle className="h-3.5 w-3.5" />
-          Create &amp; Validate PO
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+            <Upload className="h-3.5 w-3.5" />
+            <span>Import Budgets CSV</span>
+            <input
+              type="file"
+              accept=".csv"
+              onChange={(e) => void handleBudgetsCsvUpload(e)}
+              className="hidden"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => setShowBudgetForm((prev) => !prev)}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            + Add Budget
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowQuoteForm((prev) => !prev)}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            + Add Quote
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowCreate((prev) => !prev)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+          >
+            <PlusCircle className="h-3.5 w-3.5" />
+            Create &amp; Validate PO
+          </button>
+        </div>
       </div>
+
+      {showBudgetForm && (
+        <form
+          onSubmit={(e) => void handleCreateBudget(e)}
+          className="grid gap-3 rounded-xl border border-indigo-200 bg-white p-4 shadow-sm sm:grid-cols-5"
+        >
+          <input
+            value={newBudgetCode}
+            onChange={(e) => setNewBudgetCode(e.target.value)}
+            placeholder="Cost Center Code"
+            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
+            required
+          />
+          <input
+            value={newBudgetDept}
+            onChange={(e) => setNewBudgetDept(e.target.value)}
+            placeholder="Department"
+            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
+            required
+          />
+          <input
+            type="number"
+            value={newBudgetAmt}
+            onChange={(e) => setNewBudgetAmt(e.target.value)}
+            placeholder="Annual Budget ($)"
+            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
+            required
+          />
+          <input
+            value={newBudgetOwner}
+            onChange={(e) => setNewBudgetOwner(e.target.value)}
+            placeholder="Owner"
+            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
+            required
+          />
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white"
+          >
+            Save Budget
+          </button>
+        </form>
+      )}
+
+      {showQuoteForm && (
+        <form
+          onSubmit={(e) => void handleCreateQuote(e)}
+          className="grid gap-3 rounded-xl border border-indigo-200 bg-white p-4 shadow-sm sm:grid-cols-6"
+        >
+          <input
+            value={newQuoteNum}
+            onChange={(e) => setNewQuoteNum(e.target.value)}
+            placeholder="Quote #"
+            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
+            required
+          />
+          <select
+            value={newQuoteVendor || vendorId}
+            onChange={(e) => setNewQuoteVendor(e.target.value)}
+            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
+          >
+            {vendors.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+              </option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={newQuoteValidUntil}
+            onChange={(e) => setNewQuoteValidUntil(e.target.value)}
+            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
+            required
+          />
+          <input
+            value={newQuoteSku}
+            onChange={(e) => setNewQuoteSku(e.target.value)}
+            placeholder="SKU"
+            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
+            required
+          />
+          <div className="grid grid-cols-2 gap-1.5">
+            <input
+              type="number"
+              value={newQuoteQty}
+              onChange={(e) => setNewQuoteQty(e.target.value)}
+              placeholder="Qty"
+              className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs"
+              required
+            />
+            <input
+              type="number"
+              value={newQuotePrice}
+              onChange={(e) => setNewQuotePrice(e.target.value)}
+              placeholder="Unit $"
+              className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs"
+              required
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white"
+          >
+            Save Quote
+          </button>
+        </form>
+      )}
 
       {error && (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs text-rose-800">

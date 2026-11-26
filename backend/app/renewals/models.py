@@ -40,3 +40,20 @@ class RenewalItem(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, onupdate=_utc_now
     )
+
+
+class RenewalAlertDispatch(Base):
+    """Deduplicated threshold alert dispatch history for upcoming renewal notice deadlines."""
+
+    __tablename__ = "renewal_alert_dispatches"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    renewal_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("renewal_items.id", ondelete="CASCADE"), index=True
+    )
+    threshold_days: Mapped[int] = mapped_column(Integer)
+    channel: Mapped[str] = mapped_column(String(32), default="in_app")
+    delivery_status: Mapped[str] = mapped_column(String(24), default="simulated")
+    recipient_target: Mapped[str] = mapped_column(String(240), default="")
+    message_summary: Mapped[str] = mapped_column(Text)
+    dispatched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)

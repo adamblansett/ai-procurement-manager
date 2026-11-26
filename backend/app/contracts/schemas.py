@@ -108,3 +108,22 @@ class ContractPairComparisonRead(BaseModel):
 class ContractApprovalCreate(BaseModel):
     requested_by: str = Field(min_length=2, max_length=120)
     notes: str = ""
+
+
+class ClauseSearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=500)
+    clause_type: str | None = None
+    vendor_id: str | None = None
+    top_k: int = Field(default=8, ge=1, le=25)
+
+
+class ClauseSearchHit(BaseModel):
+    contract_id: str
+    contract_title: str
+    vendor_id: str
+    vendor_name: str
+    clause_type: str
+    status: str
+    risk_level: str
+    chunk_text: str
+    similarity_score: float

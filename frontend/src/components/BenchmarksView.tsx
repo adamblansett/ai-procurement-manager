@@ -1,5 +1,5 @@
-import { type FormEvent, useEffect, useState } from 'react';
-import { BarChart3, PlusCircle, Sparkles } from 'lucide-react';
+import { type ChangeEvent, type FormEvent, useEffect, useState } from 'react';
+import { BarChart3, PlusCircle, Sparkles, Upload } from 'lucide-react';
 import { procurementApi } from '../api/client';
 import type {
   BenchmarkSummary,
@@ -41,8 +41,29 @@ export function BenchmarksView({ vendors, onDataChange }: BenchmarksViewProps) {
   const [newDiscount, setNewDiscount] = useState('15.0');
   const [newVendorId, setNewVendorId] = useState('');
 
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  async function handleCsvUpload(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      const res = await procurementApi.importBenchmarksCsv(file);
+      setStatusMessage(
+        `CSV import complete: ${res.imported_count} added (${res.skipped_count ?? 0} skipped).`
+      );
+      await loadBenchmarks();
+      await onDataChange();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'CSV import failed');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function loadBenchmarks() {
     try {
@@ -131,19 +152,36 @@ export function BenchmarksView({ vendors, onDataChange }: BenchmarksViewProps) {
             Compare proposed unit rates and annual escalators against historical executed contracts.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowAdd((prev) => !prev)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
-        >
-          <PlusCircle className="h-3.5 w-3.5" />
-          Add Benchmark Quote
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+            <Upload className="h-3.5 w-3.5" />
+            <span>Import CSV</span>
+            <input
+              type="file"
+              accept=".csv"
+              onChange={(e) => void handleCsvUpload(e)}
+              className="hidden"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => setShowAdd((prev) => !prev)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+          >
+            <PlusCircle className="h-3.5 w-3.5" />
+            Add Benchmark Quote
+          </button>
+        </div>
       </div>
 
       {error && (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs text-rose-800">
           {error}
+        </div>
+      )}
+      {statusMessage && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs text-emerald-800">
+          {statusMessage}
         </div>
       )}
 

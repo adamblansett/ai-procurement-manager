@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -10,6 +10,20 @@ from app.core.database import Base
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+class User(Base):
+    """Authenticated procurement user with RBAC role assignment."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    email: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(120))
+    role: Mapped[str] = mapped_column(String(48), default="analyst", index=True)
+    password_hash: Mapped[str] = mapped_column(String(256))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
 
 
 class Vendor(Base):

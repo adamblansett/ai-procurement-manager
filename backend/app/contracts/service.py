@@ -6,13 +6,21 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.contracts.models import Contract, ContractClauseFinding, PlaybookRule
+from app.contracts.models import (
+    Contract,
+    ContractClauseEmbedding,
+    ContractClauseFinding,
+    PlaybookRule,
+)
 from app.contracts.schemas import (
     ClausePairDiffItem,
+    ClauseSearchHit,
+    ClauseSearchRequest,
     ContractDetailRead,
     ContractPairComparisonRead,
     ContractRead,
 )
+from app.core.embeddings import cosine_similarity, generate_embedding
 from app.core.governance import create_approval_request, record_audit_event
 from app.core.llm import LLMRequest, LLMRouter
 from app.core.models import ApprovalRequest, Vendor
@@ -482,8 +490,7 @@ def _evaluate_termination(segments: list[str], rule: PlaybookRule) -> EvaluatedC
             vendor_excerpt="No termination-for-convenience flexibility language found.",
             playbook_position=rule.preferred_position,
             redline_suggestion=(
-                "Add 30-day termination for convenience right with pro-rata refund of "
-                "prepaid fees."
+                "Add 30-day termination for convenience right with pro-rata refund of prepaid fees."
             ),
             deviation_score=35,
         )
@@ -684,8 +691,7 @@ def _evaluate_sla(segments: list[str], rule: PlaybookRule) -> EvaluatedClause:
             vendor_excerpt="No uptime SLA or service credit schedule detected.",
             playbook_position=rule.preferred_position,
             redline_suggestion=(
-                f"Attach SLA guaranteeing >= {min_uptime:.1f}% monthly uptime with "
-                "service credits."
+                f"Attach SLA guaranteeing >= {min_uptime:.1f}% monthly uptime with service credits."
             ),
             deviation_score=30,
         )
@@ -703,8 +709,7 @@ def _evaluate_sla(segments: list[str], rule: PlaybookRule) -> EvaluatedClause:
             vendor_excerpt=excerpt,
             playbook_position=rule.preferred_position,
             redline_suggestion=(
-                f"Raise uptime commitment to >= {min_uptime:.1f}% backed by tiered "
-                "service credits."
+                f"Raise uptime commitment to >= {min_uptime:.1f}% backed by tiered service credits."
             ),
             deviation_score=60,
         )
@@ -798,6 +803,9 @@ async def compare_contract_against_playbook(
     await db.execute(
         delete(ContractClauseFinding).where(ContractClauseFinding.contract_id == contract.id)
     )
+    await db.execute(
+        delete(ContractClauseEmbedding).where(ContractClauseEmbedding.contract_id == contract.id)
+    )
 
     findings: list[ContractClauseFinding] = []
     weighted_sum = 0.0
@@ -818,6 +826,21 @@ async def compare_contract_against_playbook(
         )
         db.add(row)
         findings.append(row)
+
+        chunk_text = (
+            f"{ev.clause_type.replace('_', ' ')} ({ev.status}): "
+            f"{ev.vendor_excerpt} {ev.redline_suggestion}"
+        ).strip()
+        emb = ContractClauseEmbedding(
+            contract_id=contract.id,
+            vendor_id=contract.vendor_id,
+            clause_type=ev.clause_type,
+            status=ev.status,
+            chunk_text=chunk_text,
+            embedding_json=generate_embedding(chunk_text),
+            dimensions=384,
+        )
+        db.add(emb)
 
     # Scale risk score so critical multi-clause deviations surface decisively in 0-100 range.
     raw_pct = (weighted_sum / max_weight) * 100.0 if max_weight > 0 else 0.0
@@ -1007,3 +1030,49 @@ async def request_contract_approval(
         payload={"risk_score": contract.risk_score, "risk_level": contract.risk_level},
     )
     return approval
+
+
+async def search_contract_clauses(
+    db: AsyncSession, req: ClauseSearchRequest
+) -> list[ClauseSearchHit]:
+    """Perform semantic similarity search across indexed contract clause embeddings."""
+    query_vec = generate_embedding(req.query)
+    stmt = select(ContractClauseEmbedding)
+    if req.clause_type:
+        stmt = stmt.where(ContractClauseEmbedding.clause_type == req.clause_type)
+    if req.vendor_id:
+        stmt = stmt.where(ContractClauseEmbedding.vendor_id == req.vendor_id)
+    rows = (await db.execute(stmt)).scalars().all()
+    if not rows:
+        return []
+
+    contract_ids = {r.contract_id for r in rows}
+    vendor_ids = {r.vendor_id for r in rows}
+    contracts = (
+        (await db.execute(select(Contract).where(Contract.id.in_(contract_ids)))).scalars().all()
+    )
+    vendors = (await db.execute(select(Vendor).where(Vendor.id.in_(vendor_ids)))).scalars().all()
+    contract_map = {c.id: c for c in contracts}
+    vendor_map = {v.id: v for v in vendors}
+
+    scored: list[ClauseSearchHit] = []
+    for row in rows:
+        sim = cosine_similarity(query_vec, list(row.embedding_json or []))
+        contract = contract_map.get(row.contract_id)
+        vendor = vendor_map.get(row.vendor_id)
+        scored.append(
+            ClauseSearchHit(
+                contract_id=row.contract_id,
+                contract_title=contract.title if contract else "",
+                vendor_id=row.vendor_id,
+                vendor_name=vendor.name if vendor else "",
+                clause_type=row.clause_type,
+                status=row.status,
+                risk_level=contract.risk_level if contract else "low",
+                chunk_text=row.chunk_text,
+                similarity_score=sim,
+            )
+        )
+
+    scored.sort(key=lambda hit: hit.similarity_score, reverse=True)
+    return scored[: req.top_k]

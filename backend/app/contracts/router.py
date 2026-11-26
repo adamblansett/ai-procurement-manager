@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.contracts.models import Contract, PlaybookRule
 from app.contracts.schemas import (
+    ClauseSearchHit,
+    ClauseSearchRequest,
     ContractApprovalCreate,
     ContractCreate,
     ContractDetailRead,
@@ -18,8 +20,10 @@ from app.contracts.service import (
     compare_contract_pair,
     get_contract_detail,
     request_contract_approval,
+    search_contract_clauses,
 )
 from app.core.database import get_db
+from app.core.documents import extract_text_from_upload
 from app.core.governance import record_audit_event
 from app.core.llm import LLMRouter, get_llm_router
 from app.core.models import Vendor
@@ -127,6 +131,64 @@ async def ingest_contract(
 
     await db.commit()
     return await get_contract_detail(db, contract.id)
+
+
+@router.post("/upload", response_model=ContractDetailRead, status_code=status.HTTP_201_CREATED)
+async def upload_contract_file(
+    vendor_id: str = Form(...),
+    title: str = Form(...),
+    contract_type: str = Form("MSA"),
+    annual_value: float = Form(0.0),
+    auto_compare: bool = Form(True),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    llm_router: LLMRouter = Depends(get_llm_router),
+) -> ContractDetailRead:
+    """Upload a .pdf, .docx, .txt, or .md contract, extract text, and run playbook diff."""
+    vendor = await db.get(Vendor, vendor_id)
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    raw_bytes = await file.read()
+    extracted_text, file_kind = extract_text_from_upload(file.filename or "contract.txt", raw_bytes)
+
+    contract = Contract(
+        vendor_id=vendor_id,
+        title=title.strip(),
+        contract_type=contract_type,
+        annual_value=round(annual_value, 2),
+        raw_text=extracted_text,
+    )
+    db.add(contract)
+    await db.flush()
+    await record_audit_event(
+        db,
+        actor="procurement-user",
+        action="contract.uploaded",
+        entity_type="contract",
+        entity_id=contract.id,
+        summary=(
+            f"Uploaded {file_kind.upper()} '{contract.title}' for {vendor.name} "
+            f"({len(extracted_text)} chars)."
+        ),
+    )
+
+    if auto_compare:
+        detail = await compare_contract_against_playbook(db, contract, llm_router)
+        await db.commit()
+        return detail
+
+    await db.commit()
+    return await get_contract_detail(db, contract.id)
+
+
+@router.post("/search", response_model=list[ClauseSearchHit])
+async def semantic_clause_search(
+    payload: ClauseSearchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> list[ClauseSearchHit]:
+    """Search across all indexed contract clauses by semantic similarity."""
+    return await search_contract_clauses(db, payload)
 
 
 @router.post("/compare-pair", response_model=ContractPairComparisonRead)
